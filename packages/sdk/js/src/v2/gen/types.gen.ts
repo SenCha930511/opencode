@@ -10190,6 +10190,55 @@ export type SessionPromptAsyncResponses = {
 
 export type SessionPromptAsyncResponse = SessionPromptAsyncResponses[keyof SessionPromptAsyncResponses]
 
+export type SessionSideQuestionData = {
+  body?: {
+    question: string
+    model?: {
+      providerID: string
+      modelID: string
+      variant?: string
+    }
+  }
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/side-question"
+}
+
+export type SessionSideQuestionErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+}
+
+export type SessionSideQuestionError = SessionSideQuestionErrors[keyof SessionSideQuestionErrors]
+
+export type SessionSideQuestionResponses = {
+  /**
+   * Side question answer
+   */
+  200: {
+    answer: string
+    model: {
+      providerID: string
+      modelID: string
+      variant?: string
+    }
+    createdMs: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
+}
+
+export type SessionSideQuestionResponse = SessionSideQuestionResponses[keyof SessionSideQuestionResponses]
+
 export type SessionCommandData = {
   body?: {
     messageID?: string
