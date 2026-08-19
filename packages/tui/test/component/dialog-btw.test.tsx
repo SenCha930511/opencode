@@ -12,6 +12,7 @@ import { createFetch, directory, eventSource, json } from "../fixture/tui-sdk"
 import { TestTuiContexts } from "../fixture/tui-environment"
 import { append as seedEntry, __setStateDir } from "../../src/prompt/btw-history.impl"
 import type { BtwEntry } from "../../src/prompt/btw-history.impl"
+import { SPINNER_FRAMES } from "../../src/component/spinner"
 import type { OpencodeClient } from "@opencode-ai/sdk/v2"
 import type { DialogContext } from "../../src/ui/dialog"
 import type { ToastContext } from "../../src/ui/toast"
@@ -39,6 +40,13 @@ async function wait(fn: () => boolean, timeout = 2000) {
     if (Date.now() - start > timeout) throw new Error("timed out waiting for condition")
     await Bun.sleep(10)
   }
+}
+
+// The loading state's spinner runs on the repo-wide frames at an 80ms interval
+// (component/spinner.tsx), so a 2s polling budget leaves a huge margin without
+// asserting timing exactness — only that the glyph advances.
+function spinnerGlyphIn(frame: string) {
+  return SPINNER_FRAMES.find((glyph) => frame.includes(glyph))
 }
 
 type SideQuestionCall = {
@@ -200,6 +208,15 @@ test("loading then answer render in the docked panel, never in the dialog stack"
     expect(loading).toContain(TRANSCRIPT)
     expect(loading.indexOf(TRANSCRIPT)).toBeLessThan(loading.indexOf("/btw"))
 
+    const first = spinnerGlyphIn(loading)
+    expect(first).toBeDefined()
+    let advanced: string | undefined
+    await wait(() => {
+      advanced = spinnerGlyphIn(tui.frame())
+      return advanced !== undefined && advanced !== first
+    })
+    expect(SPINNER_FRAMES).toContain(advanced!)
+
     tui.calls[0]!.resolve(
       json({ answer: "side answer xyz42", model: { providerID: "p1", modelID: "m1" }, createdMs: 1 }),
     )
@@ -209,6 +226,13 @@ test("loading then answer render in the docked panel, never in the dialog stack"
     expect(answer).not.toContain("esc = cancel")
     expect(answer.indexOf(TRANSCRIPT)).toBeLessThan(answer.indexOf("xyz42"))
     expect(tui.ctx.dialog.stack).toHaveLength(0)
+
+    // the spinner unmounts with the loading state, so no glyph may appear or
+    // mutate once the answer renders — two captures straddling multiple 80ms
+    // frames must be identical
+    expect(spinnerGlyphIn(answer)).toBeUndefined()
+    await Bun.sleep(250)
+    expect(tui.frame()).toBe(answer)
   } finally {
     await tui.cleanup()
   }
@@ -237,6 +261,14 @@ test("escape during loading aborts the request and dismisses the panel", async (
     await wait(() => tui.calls.length === 1)
     await wait(() => tui.frame().includes("esc = cancel"))
     expect(tui.calls[0]?.signal?.aborted).toBe(false)
+
+    // animation is live at esc time: cancel must work while the spinner spins
+    const first = spinnerGlyphIn(tui.frame())
+    expect(first).toBeDefined()
+    await wait(() => {
+      const next = spinnerGlyphIn(tui.frame())
+      return next !== undefined && next !== first
+    })
 
     tui.app.mockInput.pressEscape()
     await wait(() => tui.frame().includes("cancel me") === false)

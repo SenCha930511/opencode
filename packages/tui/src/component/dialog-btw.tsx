@@ -9,6 +9,7 @@ import type { DialogContext } from "../ui/dialog"
 import type { ToastContext } from "../ui/toast"
 import { read, type BtwEntry } from "../prompt/btw-history.impl"
 import { useBindings, useOpencodeModeStack } from "../keymap"
+import { Spinner } from "./spinner"
 
 type BtwState = {
   status: "idle" | "loading" | "answer" | "error" | "list" | "entry"
@@ -219,7 +220,7 @@ export function DialogBtw() {
           </box>
           <Switch>
             <Match when={state.status === "loading"}>
-              <text fg={theme.textMuted}>…</text>
+              <Spinner />
             </Match>
             <Match when={state.status === "error"}>
               <text fg={theme.error}>{state.error}</text>
