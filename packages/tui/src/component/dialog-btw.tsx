@@ -4,6 +4,7 @@ import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCle
 import { createStore } from "solid-js/store"
 import type { OpencodeClient } from "@opencode-ai/sdk/v2"
 import { useTheme } from "../context/theme"
+import { useEvent } from "../context/event"
 import { SplitBorder } from "../ui/border"
 import type { DialogContext } from "../ui/dialog"
 import type { ToastContext } from "../ui/toast"
@@ -13,6 +14,7 @@ import { Spinner } from "./spinner"
 
 type BtwState = {
   status: "idle" | "loading" | "answer" | "error" | "list" | "entry"
+  streaming: boolean
   question: string
   answer: string
   model: string
@@ -25,6 +27,7 @@ type BtwState = {
 // must merge a fresh literal rather than a shared initial object.
 const initial = (): BtwState => ({
   status: "idle",
+  streaming: false,
   question: "",
   answer: "",
   model: "",
@@ -35,8 +38,16 @@ const initial = (): BtwState => ({
 
 const [state, setState] = createStore<BtwState>(initial())
 let inFlight: AbortController | undefined
+let events: ReturnType<typeof useEvent> | undefined
+let offDelta: (() => void) | undefined
+
+function settleDelta() {
+  offDelta?.()
+  offDelta = undefined
+}
 
 function dismiss() {
+  settleDelta()
   setState(initial())
 }
 
@@ -64,6 +75,9 @@ export function DialogBtw() {
   const dimensions = useTerminalDimensions()
   const renderer = useRenderer()
   const modeStack = useOpencodeModeStack()
+
+  // Hoisted module handle: ask() subscribes through the shared emitter and settles its own unsubscribe (no second SSE connection).
+  events = useEvent()
 
   let scroll: ScrollBoxRenderable | undefined
 
@@ -107,7 +121,11 @@ export function DialogBtw() {
     pause = { restore, popMode: modeStack.push(BTW_MODE) }
   })
 
-  onCleanup(deactivate)
+  onCleanup(() => {
+    settleDelta()
+    deactivate()
+    events = undefined
+  })
 
   function escape() {
     if (state.status === "loading") {
@@ -176,7 +194,9 @@ export function DialogBtw() {
 
   createEffect(() => {
     body()
-    setTall(false)
+    // While deltas append the body must not flap between box and scrollbox
+    // heights; the reset happens once when the final answer replaces the stream.
+    if (!state.streaming) setTall(false)
   })
 
   function onBodySize(this: MarkdownRenderable) {
@@ -219,15 +239,15 @@ export function DialogBtw() {
             <text fg={theme.textMuted}>{question()}</text>
           </box>
           <Switch>
-            <Match when={state.status === "loading"}>
+            <Match when={state.status === "loading" && !state.streaming}>
               <Spinner />
             </Match>
             <Match when={state.status === "error"}>
               <text fg={theme.error}>{state.error}</text>
             </Match>
-            <Match when={state.status === "answer" || state.status === "entry"}>
+            <Match when={state.status === "answer" || state.status === "entry" || state.streaming}>
               {tall() ? (
-                <scrollbox height={bodyHeight()} flexShrink={1}>
+                <scrollbox height={bodyHeight()} flexShrink={1} stickyScroll={state.streaming} stickyStart="bottom">
                   <markdown
                     syntaxStyle={syntax()}
                     streaming={true}
@@ -303,11 +323,23 @@ DialogBtw.dismiss = dismiss
 
 DialogBtw.ask = (ctx: DialogBtwContext, input: { sessionID: string; question: string }) => {
   inFlight?.abort()
+  settleDelta()
   const ctrl = new AbortController()
   inFlight = ctrl
+  // Client-side correlation id keeps another ask's deltas from ever rendering into this panel.
+  const questionID = crypto.randomUUID()
   setState({ ...initial(), status: "loading", question: input.question })
+  offDelta = events?.on("side_question.delta", (event) => {
+    if (inFlight !== ctrl || ctrl.signal.aborted) return
+    if (event.properties.sessionID !== input.sessionID) return
+    if (event.properties.sideQuestionID !== questionID) return
+    setState((s) => (s.status === "loading" ? { streaming: true, answer: s.answer + event.properties.delta } : s))
+  })
   void ctx.client.session
-    .sideQuestion({ sessionID: input.sessionID, question: input.question }, { signal: ctrl.signal, throwOnError: true })
+    .sideQuestion(
+      { sessionID: input.sessionID, question: input.question, sideQuestionID: questionID },
+      { signal: ctrl.signal, throwOnError: true },
+    )
     .then((result) => {
       // A cancelled ask must produce no side effects: a response that resolves
       // after esc-abort (or after being superseded by a newer ask) is dropped
@@ -315,9 +347,10 @@ DialogBtw.ask = (ctx: DialogBtwContext, input: { sessionID: string; question: st
       // also abort()ed, so the predicates overlap; the identity check still
       // guards a replace path that resolves before the abort signal lands.
       if (inFlight !== ctrl || ctrl.signal.aborted) return
+      settleDelta()
       const model = `${result.data.model.providerID}/${result.data.model.modelID}${result.data.model.variant ? ` (${result.data.model.variant})` : ""}`
       const answer = result.data.answer.trim() ? result.data.answer : "(no answer)"
-      setState({ status: "answer", answer, model })
+      setState({ status: "answer", streaming: false, answer, model })
       if (answer === "(no answer)") {
         ctx.toast.show({ variant: "warning", message: "The model returned an empty answer" })
       }
@@ -330,8 +363,10 @@ DialogBtw.ask = (ctx: DialogBtwContext, input: { sessionID: string; question: st
     })
     .catch((err: unknown) => {
       if (inFlight !== ctrl || ctrl.signal.aborted) return
+      settleDelta()
       setState({
         status: "error",
+        streaming: false,
         error: err instanceof Error ? err.message : "side-question failed",
       })
     })
@@ -345,6 +380,7 @@ export function openBtwHistory(ctx: BtwHistoryContext): void {
   // Opening history replaced an in-flight ask's overlay in the dialog stack (whose
   // close handler aborted it), so the panel must kill the ask itself here.
   inFlight?.abort()
+  settleDelta()
   void read(ctx.sessionID).then((entries) => {
     if (entries.length === 0) return
     setState({ ...initial(), status: "list", entries })

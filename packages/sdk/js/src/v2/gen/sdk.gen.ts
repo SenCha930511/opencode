@@ -4165,6 +4165,7 @@ export class Session2 extends HeyApiClient {
         modelID: string
         variant?: string
       }
+      sideQuestionID?: string
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -4178,6 +4179,7 @@ export class Session2 extends HeyApiClient {
             { in: "query", key: "workspace" },
             { in: "body", key: "question" },
             { in: "body", key: "model" },
+            { in: "body", key: "sideQuestionID" },
           ],
         },
       ],

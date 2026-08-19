@@ -6,8 +6,9 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { SideQuestionEvent } from "@opencode-ai/schema/side-question-event"
 import { expect } from "bun:test"
-import { Deferred, Duration, Effect, Exit, Fiber, Layer } from "effect"
+import { Deferred, Duration, Effect, Exit, Fiber, Layer, Schema } from "effect"
 import path from "path"
 import { Agent as AgentSvc } from "../../src/agent/agent"
 import { BackgroundJob } from "@/background/job"
@@ -48,7 +49,7 @@ import { Format } from "../../src/format"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { TestInstance } from "../fixture/fixture"
 import { pollWithTimeout, testEffect } from "../lib/effect"
-import { TestLLMServer } from "../lib/llm-server"
+import { TestLLMServer, raw, reply } from "../lib/llm-server"
 
 const summary = Layer.succeed(
   SessionSummary.Service,
@@ -135,6 +136,7 @@ const sideQuestionSpy = LayerNode.make({
     Instruction.node,
     SystemPrompt.node,
     Database.node,
+    EventV2Bridge.node,
   ],
 })
 
@@ -599,6 +601,109 @@ it.instance(
       expect(messages.filter((m) => (m as { role?: string }).role !== "system")).toEqual([
         { role: "user", content: wrap("where are we?") },
       ])
+    }),
+  15_000,
+)
+
+type CapturedDelta = { sideQuestionID: string; delta: string }
+
+// Listen registration is eager (the SSE handler relies on the same property),
+// so subscribing before ask() cannot miss deltas the way a forked stream
+// consumer could.
+const subscribeDeltas = Effect.fn("test.subscribeDeltas")(function* (sessionID: SessionID, deltas: CapturedDelta[]) {
+  const events = yield* EventV2Bridge.Service
+  const unsubscribe = yield* events.listen((event) =>
+    Effect.sync(() => {
+      if (event.type !== SideQuestionEvent.Delta.type) return
+      const data = Schema.decodeUnknownSync(SideQuestionEvent.Delta.data)(event.data)
+      if (data.sessionID !== sessionID) return
+      deltas.push({ sideQuestionID: data.sideQuestionID, delta: data.delta })
+    }),
+  )
+  yield* Effect.addFinalizer(() => unsubscribe)
+})
+
+it.instance(
+  "deltas publish in stream order, concatenate to the answer, and carry the caller's sideQuestionID",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const side = yield* SideQuestion.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "SideDelta" })
+      yield* seed(chat.id)
+
+      const deltas: CapturedDelta[] = []
+      yield* subscribeDeltas(chat.id, deltas)
+
+      yield* llm.push(reply().text("alpha-").text("beta-").text("gamma").stop())
+      const out = yield* side.ask({ sessionID: chat.id, question: "spell the parts", sideQuestionID: "sq-caller-42" })
+
+      expect(out.answer).toBe("alpha-beta-gamma")
+      expect(deltas.map((d) => d.delta)).toEqual(["alpha-", "beta-", "gamma"])
+      expect(deltas.map((d) => d.delta).join("")).toBe(out.answer)
+      expect(new Set(deltas.map((d) => d.sideQuestionID))).toEqual(new Set(["sq-caller-42"]))
+    }),
+  15_000,
+)
+
+// The chunk shapes below mirror the OpenAI wire lines the private test-lib
+// builders produce so raw() can emit one delta, hold, then offer a second.
+const roleChunk = () => ({
+  id: "chatcmpl-test",
+  object: "chat.completion.chunk",
+  choices: [{ delta: { role: "assistant" } }],
+})
+const textChunk = (content: string) => ({
+  id: "chatcmpl-test",
+  object: "chat.completion.chunk",
+  choices: [{ delta: { content } }],
+})
+const stopChunk = () => ({
+  id: "chatcmpl-test",
+  object: "chat.completion.chunk",
+  choices: [{ delta: {}, finish_reason: "stop" }],
+})
+
+it.instance(
+  "interrupting an ask mid-stream stops delta publishing and the ask rejects",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const side = yield* SideQuestion.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "SideAbort" })
+      yield* seed(chat.id)
+
+      const deltas: CapturedDelta[] = []
+      yield* subscribeDeltas(chat.id, deltas)
+
+      const gate = yield* Deferred.make<void>()
+      yield* llm.push(
+        raw({
+          chunks: [roleChunk(), textChunk("first-half-")],
+          tail: [textChunk("second-half"), stopChunk()],
+          wait: deferredAsPromise(gate),
+        }),
+      )
+
+      const asking = yield* side.ask({ sessionID: chat.id, question: "tell me something" }).pipe(Effect.forkChild)
+      yield* pollWithTimeout(
+        Effect.sync(() => (deltas.length === 1 ? (true as const) : undefined)),
+        "no side-question delta arrived",
+      )
+
+      yield* Fiber.interrupt(asking)
+      const exit = yield* Fiber.await(asking)
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(deltas.map((d) => d.delta)).toEqual(["first-half-"])
+
+      yield* Deferred.succeed(gate, void 0)
+      // The negative half of the assertion: give the now-released server stream a
+      // wall-clock window to flush; a live consumer would observe "second-half"
+      // within it (mirrors the flushed() settle window of the TUI glass tests).
+      yield* Effect.sleep("200 millis")
+      expect(deltas.map((d) => d.delta)).toEqual(["first-half-"])
     }),
   15_000,
 )

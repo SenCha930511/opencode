@@ -5,12 +5,14 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { NamedError } from "@opencode-ai/core/util/error"
+import { SideQuestionEvent } from "@opencode-ai/schema/side-question-event"
 import { LLMEvent } from "@opencode-ai/llm"
 import { eq } from "drizzle-orm"
 import { Context, Effect, Layer, Option, Schema } from "effect"
 import * as Stream from "effect/Stream"
 import { GitLabWorkflowLanguageModel } from "gitlab-ai-provider"
 import { Agent } from "../agent/agent"
+import { EventV2Bridge } from "@/event-v2-bridge"
 import { Provider } from "@/provider/provider"
 import { Plugin } from "../plugin"
 import { Instruction } from "./instruction"
@@ -57,6 +59,8 @@ export const AskInput = Schema.Struct({
   sessionID: SessionID,
   question: Schema.String,
   model: Schema.optional(ModelRef),
+  // Correlates one ask's ephemeral side_question.delta events; never echoed in the POST response.
+  sideQuestionID: Schema.optional(Schema.String),
 })
 export type AskInput = Schema.Schema.Type<typeof AskInput>
 
@@ -83,6 +87,7 @@ export const layer: Layer.Layer<
   | SystemPrompt.Service
   | LLM.Service
   | Database.Service
+  | EventV2Bridge.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -94,6 +99,7 @@ export const layer: Layer.Layer<
     const sys = yield* SystemPrompt.Service
     const llm = yield* LLM.Service
     const database = yield* Database.Service
+    const events = yield* EventV2Bridge.Service
 
     // Mirrors SessionPrompt.currentModel: session row model, then the newest
     // user message carrying a model, then the provider default.
@@ -179,6 +185,7 @@ export const layer: Layer.Layer<
         ...(skills ? [skills] : []),
       ]
 
+      const sideQuestionID = input.sideQuestionID ?? MessageID.ascending()
       const text = yield* llm
         .stream({
           user,
@@ -198,6 +205,17 @@ export const layer: Layer.Layer<
           permission: session.permission,
         })
         .pipe(
+          // Deltas publish in stream order from inside the scoped LLM stream, so
+          // interrupting ask (HTTP abort) stops publishing with no post-abort events.
+          Stream.tap((event) =>
+            LLMEvent.is.textDelta(event)
+              ? events.publish(SideQuestionEvent.Delta, {
+                  sessionID: input.sessionID,
+                  sideQuestionID,
+                  delta: event.text,
+                })
+              : Effect.void,
+          ),
           Stream.runFold(
             () => "",
             (text, event) => (LLMEvent.is.textDelta(event) ? text + event.text : text),
@@ -230,6 +248,7 @@ export const node = LayerNode.make({
     SystemPrompt.node,
     LLM.node,
     Database.node,
+    EventV2Bridge.node,
   ],
 })
 

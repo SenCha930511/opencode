@@ -75,6 +75,7 @@ export const SideQuestionModel = Schema.Struct({
 export const SideQuestionPayload = Schema.Struct({
   question: Schema.NonEmptyString,
   model: Schema.optional(SideQuestionModel),
+  sideQuestionID: Schema.optional(Schema.String),
 })
 export const SideQuestionResult = Schema.Struct({
   answer: Schema.String,

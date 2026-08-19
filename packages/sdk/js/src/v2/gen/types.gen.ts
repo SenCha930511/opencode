@@ -85,6 +85,7 @@ export type Event =
   | EventQuestionReplied
   | EventQuestionRejected
   | EventSessionCompacted
+  | EventSideQuestionDelta
   | EventVcsBranchUpdated
   | EventWorkspaceReady
   | EventWorkspaceFailed
@@ -1544,6 +1545,15 @@ export type GlobalEvent = {
       }
     | {
         id: string
+        type: "side_question.delta"
+        properties: {
+          sessionID: string
+          sideQuestionID: string
+          delta: string
+        }
+      }
+    | {
+        id: string
         type: "vcs.branch.updated"
         properties: {
           branch?: string
@@ -2936,6 +2946,7 @@ export type V2Event =
   | QuestionReplied2
   | QuestionRejected2
   | SessionCompacted
+  | SideQuestionDelta
   | VcsBranchUpdated
   | WorkspaceReady
   | WorkspaceFailed
@@ -5970,6 +5981,25 @@ export type SessionCompacted = {
   }
 }
 
+export type SideQuestionDelta = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "side_question.delta"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    sessionID: string
+    sideQuestionID: string
+    delta: string
+  }
+}
+
 export type VcsBranchUpdated = {
   id: string
   metadata?: {
@@ -6986,6 +7016,16 @@ export type EventSessionCompacted = {
   type: "session.compacted"
   properties: {
     sessionID: string
+  }
+}
+
+export type EventSideQuestionDelta = {
+  id: string
+  type: "side_question.delta"
+  properties: {
+    sessionID: string
+    sideQuestionID: string
+    delta: string
   }
 }
 
@@ -10198,6 +10238,7 @@ export type SessionSideQuestionData = {
       modelID: string
       variant?: string
     }
+    sideQuestionID?: string
   }
   path: {
     sessionID: string
