@@ -9,6 +9,7 @@ import { ClipboardProvider, useClipboard } from "./context/clipboard"
 import { ExitProvider, useExit } from "./context/exit"
 import { EpilogueProvider } from "./context/epilogue"
 import * as Selection from "./util/selection"
+import { pressExitConfirm, settleExitConfirmKey } from "./util/exit-confirm"
 import { createCliRenderer, MouseButton } from "@opentui/core"
 import { RouteProvider, useRoute } from "./context/route"
 import {
@@ -383,7 +384,6 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
   const sync = useSync()
   const project = useProject()
   const exit = useExit()
-  const promptRef = usePromptRef()
   const pluginRuntime = usePluginRuntime()
   const attention = createTuiAttention({ renderer, config: tuiConfig, kv })
   const clipboard = useClipboard()
@@ -980,16 +980,6 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
     bindings: tuiConfig.keybinds.gather("app.global", appGlobalBindingCommands),
   }))
 
-  useBindings(() => ({
-    mode: OPENCODE_BASE_MODE,
-    enabled: () => {
-      const current = promptRef.current
-      if (!current?.focused) return true
-      return current.current.input === ""
-    },
-    bindings: tuiConfig.keybinds.gather("app_exit", ["app.exit"]),
-  }))
-
   event.on("tui.command.execute", (evt, { workspace }) => {
     if (workspace !== project.workspace.current()) return
     keymap.dispatchCommand(evt.properties.command)
@@ -1112,6 +1102,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
           : undefined
       }
     >
+      <ExitConfirmBinding onExit={() => exit()} />
       <Show when={Flag.OPENCODE_SHOW_TTFD}>
         <TimeToFirstDraw />
       </Show>
@@ -1139,4 +1130,38 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
       </Show>
     </box>
   )
+}
+
+export function ExitConfirmBinding(props: { onExit: () => void }) {
+  const keymap = useOpencodeKeymap()
+  const tuiConfig = useTuiConfig()
+  const promptRef = usePromptRef()
+  useBindings(() => ({
+    commands: [
+      {
+        namespace: "palette" as const,
+        name: "app.exit_confirm",
+        title: "Exit the app (with confirmation)",
+        hidden: true,
+        category: "System",
+        run: () => pressExitConfirm(props.onExit),
+      },
+    ],
+  }))
+  useBindings(() => ({
+    mode: OPENCODE_BASE_MODE,
+    enabled: () => {
+      const current = promptRef.current
+      if (!current?.focused) return true
+      return current.current.input === ""
+    },
+    bindings: tuiConfig.keybinds
+      .gather("app_exit", ["app.exit"])
+      .map((binding) => ({ ...binding, cmd: "app.exit_confirm" })),
+  }))
+  // Disarm once any key resolves to something else; the confirm command
+  // marks its own key as consumed so arming is not undone immediately.
+  const off = keymap.intercept("key:after", ({ reason }) => settleExitConfirmKey(reason))
+  onCleanup(off)
+  return null
 }

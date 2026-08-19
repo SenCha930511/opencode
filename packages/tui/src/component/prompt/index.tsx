@@ -41,6 +41,7 @@ import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import type { AssistantMessage, FilePart, UserMessage } from "@opencode-ai/sdk/v2"
 import { Locale } from "../../util/locale"
 import { errorMessage } from "../../util/error"
+import { exitConfirmArmed } from "../../util/exit-confirm"
 import { formatDuration } from "../../util/format"
 import { createColors, createFrames } from "../../ui/spinner"
 import { useDialog } from "../../ui/dialog"
@@ -1571,6 +1572,13 @@ export function Prompt(props: PromptProps) {
         </box>
         <box width="100%" flexDirection="row" justifyContent="space-between">
           <Switch>
+            <Match when={exitConfirmArmed()}>
+              <box marginLeft={1}>
+                <text fg={theme.primary}>
+                  ctrl+c <span style={{ fg: theme.textMuted }}>again to quit</span>
+                </text>
+              </box>
+            </Match>
             <Match when={status().type !== "idle"}>
               <box
                 flexDirection="row"
