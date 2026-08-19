@@ -43,7 +43,7 @@ import { Locale } from "../../util/locale"
 import { errorMessage } from "../../util/error"
 import { formatDuration } from "../../util/format"
 import { createColors, createFrames } from "../../ui/spinner"
-import { useDialog, type DialogContext } from "../../ui/dialog"
+import { useDialog } from "../../ui/dialog"
 import { DialogProvider as DialogProviderConnect } from "../dialog-provider"
 import { DialogAlert } from "../../ui/dialog-alert"
 import { useToast } from "../../ui/toast"
@@ -51,7 +51,7 @@ import { useKV } from "../../context/kv"
 import { createFadeIn } from "../../util/signal"
 import { DialogSkill } from "../dialog-skill"
 import { DialogWorkspaceUnavailable } from "../dialog-workspace-unavailable"
-import { DialogBtw } from "../dialog-btw"
+import { DialogBtw, openBtwHistory } from "../dialog-btw"
 import { useArgs } from "../../context/args"
 import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useLeaderActive, useOpencodeKeymap } from "../../keymap"
 import { useTuiConfig } from "../../config"
@@ -636,7 +636,7 @@ export function Prompt(props: PromptProps) {
 
   createEffect(() => {
     if (!input || input.isDestroyed) return
-    if (props.visible === false || dialog.stack.length > 0) {
+    if (props.visible === false || dialog.stack.length > 0 || DialogBtw.active()) {
       if (input.focused) input.blur()
       return
     }
@@ -989,17 +989,15 @@ export function Prompt(props: PromptProps) {
       const btwRest = btwLineEnd === -1 ? "" : btwText.slice(btwLineEnd + 1)
       const question = (btwLineArgs.join(" ") + (btwRest ? "\n" + btwRest : "")).trim()
       if (!question) {
-        // dialog-btw-history / btw-history land via sibling workers; the
-        // non-literal specifiers keep this compiling (and usage shown) first.
+        // btw-history lands via a sibling worker; the non-literal specifier
+        // keeps this compiling (and usage shown) first.
         type BtwHistory = {
           read(sessionID: string): Promise<BtwEntry[]>
         }
-        type BtwHistoryDialog = { openBtwHistory(ctx: { dialog: DialogContext }): void }
         const history: BtwHistory | undefined = await import("../../prompt/" + "btw-history").catch(() => undefined)
         const entries = history ? await history.read(sessionID) : []
         if (entries.length > 0) {
-          const mod: BtwHistoryDialog | undefined = await import("../" + "dialog-btw-history").catch(() => undefined)
-          mod?.openBtwHistory({ dialog })
+          openBtwHistory({ dialog, sessionID })
           return true
         }
         usage()

@@ -18,12 +18,11 @@ import type { PromptRef } from "../../src/component/prompt"
 type BtwEntry = { ts: number; sessionID: string; q: string; a: string; model: string }
 
 const ask = mock((_ctx: unknown, _input: { sessionID: string; question: string }) => {})
+const openBtwHistory = mock((_ctx: { dialog: DialogContext; sessionID: string }) => {})
 mock.module("../../src/component/dialog-btw", () => ({
-  DialogBtw: Object.assign(() => null, { ask }),
+  DialogBtw: Object.assign(() => null, { ask, active: () => false, dismiss: () => {} }),
+  openBtwHistory,
 }))
-
-const openBtwHistory = mock((_ctx: { dialog: DialogContext }) => {})
-mock.module("../../src/component/dialog-btw-history", () => ({ openBtwHistory }))
 
 const read = mock((_sessionID: string): Promise<BtwEntry[]> => Promise.resolve([]))
 mock.module("../../src/prompt/btw-history", () => ({
@@ -315,7 +314,7 @@ test("/btw hello in a session asks the side question and clears the composer", a
   }
 })
 
-test("bare /btw with history entries opens the history dialog", async () => {
+test("bare /btw with history entries opens the inline history browser", async () => {
   await using tmp = await tmpdir()
   read.mockImplementation(() => Promise.resolve([{ ts: 1, sessionID: "ses_test", q: "q", a: "a", model: "p1/m1" }]))
   const tui = await mount({ root: tmp.path, sessionID: "ses_test" })
@@ -323,6 +322,7 @@ test("bare /btw with history entries opens the history dialog", async () => {
     await tui.typeAndSubmit("/btw")
     await wait(() => openBtwHistory.mock.calls.length === 1)
     expect(openBtwHistory.mock.calls[0]?.[0]).toHaveProperty("dialog")
+    expect(openBtwHistory.mock.calls[0]?.[0]).toHaveProperty("sessionID", "ses_test")
     expect(read.mock.calls).toHaveLength(1)
     expect(read.mock.calls[0]?.[0]).toBe("ses_test")
     expect(ask.mock.calls).toHaveLength(0)

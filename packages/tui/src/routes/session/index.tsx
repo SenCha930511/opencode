@@ -52,6 +52,7 @@ import { DialogConfirm } from "../../ui/dialog-confirm"
 import { DialogTimeline } from "./dialog-timeline"
 import { DialogForkFromTimeline } from "./dialog-fork-from-timeline"
 import { DialogSessionRename } from "../../component/dialog-session-rename"
+import { DialogBtw } from "../../component/dialog-btw"
 import { Sidebar } from "./sidebar"
 import { SubagentFooter } from "./subagent-footer.tsx"
 import { filetype } from "../../util/filetype"
@@ -1309,6 +1310,7 @@ export function Session() {
                 <Show when={session()?.parentID}>
                   <SubagentFooter />
                 </Show>
+                <DialogBtw />
                 <Show when={visible()}>
                   <pluginRuntime.Slot
                     name="session_prompt"

@@ -48,6 +48,7 @@ import { DialogThemeList } from "./component/dialog-theme-list"
 import { DialogHelp } from "./ui/dialog-help"
 import { DialogAgent } from "./component/dialog-agent"
 import { DialogSessionList } from "./component/dialog-session-list"
+import { btwSessionCommand } from "./component/dialog-btw"
 import { DialogWorkspaceList } from "./component/dialog-workspace-list"
 import { DialogConsoleOrg } from "./component/dialog-console-org"
 import { ThemeProvider, useTheme } from "./context/theme"
@@ -594,6 +595,11 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
           dialog.clear()
         },
       },
+      btwSessionCommand({
+        sessionID: () => (route.data.type === "session" ? route.data.sessionID : undefined),
+        dialog,
+        toast,
+      }),
       {
         name: "workspace.copy_path",
         title: "Copy worktree path",
