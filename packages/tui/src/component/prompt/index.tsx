@@ -28,6 +28,7 @@ import { useEvent } from "../../context/event"
 import { editorSelectionKey, useEditorContext, type EditorSelection } from "../../context/editor"
 import { normalizePromptContent, openEditor } from "../../editor"
 import { useExit } from "../../context/exit"
+import type { BtwEntry } from "../../prompt/btw-history.impl"
 import { promptOffsetWidth } from "../../prompt/display"
 import { createStore, produce, unwrap } from "solid-js/store"
 import { usePromptHistory, type PromptInfo } from "../../prompt/history"
@@ -42,7 +43,7 @@ import { Locale } from "../../util/locale"
 import { errorMessage } from "../../util/error"
 import { formatDuration } from "../../util/format"
 import { createColors, createFrames } from "../../ui/spinner"
-import { useDialog } from "../../ui/dialog"
+import { useDialog, type DialogContext } from "../../ui/dialog"
 import { DialogProvider as DialogProviderConnect } from "../dialog-provider"
 import { DialogAlert } from "../../ui/dialog-alert"
 import { useToast } from "../../ui/toast"
@@ -50,6 +51,7 @@ import { useKV } from "../../context/kv"
 import { createFadeIn } from "../../util/signal"
 import { DialogSkill } from "../dialog-skill"
 import { DialogWorkspaceUnavailable } from "../dialog-workspace-unavailable"
+import { DialogBtw } from "../dialog-btw"
 import { useArgs } from "../../context/args"
 import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useLeaderActive, useOpencodeKeymap } from "../../keymap"
 import { useTuiConfig } from "../../config"
@@ -955,6 +957,65 @@ export function Prompt(props: PromptProps) {
       syncExtmarksWithPromptParts()
     }
     if (props.disabled) return false
+
+    // /btw is a client-side side-question flow: it must never create a session
+    // from home, never reach session.command/session.prompt, and must work
+    // while the session is busy - so it is intercepted ahead of every gate
+    // below (autocomplete, model selection, session create). Pasted text is
+    // expanded first so placeholders match the real content.
+    const btwText = expandTrackedPastedText(
+      store.prompt.input,
+      input.extmarks.getAllForTypeId(promptPartTypeId).flatMap((extmark) => {
+        const partIndex = store.extmarkToPartIndex.get(extmark.id)
+        const part = partIndex === undefined ? undefined : store.prompt.parts[partIndex]
+        if (part?.type !== "text") return []
+        return [{ start: extmark.start, end: extmark.end, text: part.text }]
+      }),
+    )
+    const btwLineEnd = btwText.indexOf("\n")
+    const btwFirstLine = btwLineEnd === -1 ? btwText : btwText.slice(0, btwLineEnd)
+    const [btwTrigger, ...btwLineArgs] = btwFirstLine.split(" ")
+    if (store.mode !== "shell" && btwTrigger.toLowerCase() === "/btw") {
+      const usage = () =>
+        toast.show({
+          variant: "info",
+          message: "/btw <question> - ask a side question about the current session",
+        })
+      if (!props.sessionID) {
+        usage()
+        return true
+      }
+      const sessionID = props.sessionID
+      const btwRest = btwLineEnd === -1 ? "" : btwText.slice(btwLineEnd + 1)
+      const question = (btwLineArgs.join(" ") + (btwRest ? "\n" + btwRest : "")).trim()
+      if (!question) {
+        // dialog-btw-history / btw-history land via sibling workers; the
+        // non-literal specifiers keep this compiling (and usage shown) first.
+        type BtwHistory = {
+          read(sessionID: string): Promise<BtwEntry[]>
+        }
+        type BtwHistoryDialog = { openBtwHistory(ctx: { dialog: DialogContext }): void }
+        const history: BtwHistory | undefined = await import("../../prompt/" + "btw-history").catch(() => undefined)
+        const entries = history ? await history.read(sessionID) : []
+        if (entries.length > 0) {
+          const mod: BtwHistoryDialog | undefined = await import("../" + "dialog-btw-history").catch(() => undefined)
+          mod?.openBtwHistory({ dialog })
+          return true
+        }
+        usage()
+        return true
+      }
+      DialogBtw.ask({ dialog, client: sdk.client, toast }, { sessionID, question })
+      input.extmarks.clear()
+      input.clear()
+      setStore("prompt", {
+        input: "",
+        parts: [],
+      })
+      setStore("extmarkToPartIndex", new Map())
+      return true
+    }
+
     if (workspace.creating() || move.creating()) return false
     if (auto()?.visible) return false
     if (!store.prompt.input) return false
