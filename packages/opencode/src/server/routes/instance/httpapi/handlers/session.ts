@@ -4,8 +4,10 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Command } from "@/command"
 import { Permission } from "@/permission"
+import { Provider } from "@/provider/provider"
 import { SessionShare } from "@/share/session"
 import { Session } from "@/session/session"
+import { SideQuestion } from "@/session/side-question"
 import { SessionCompaction } from "@/session/compaction"
 import { MessageV2 } from "@/session/message-v2"
 import { SessionPrompt } from "@/session/prompt"
@@ -33,10 +35,11 @@ import {
   PromptPayload,
   RevertPayload,
   ShellPayload,
+  SideQuestionPayload,
   SummarizePayload,
   UpdatePayload,
 } from "../groups/session"
-import { PermissionNotFoundError } from "../errors"
+import { ApiNotFoundError, PermissionNotFoundError, notFound } from "../errors"
 import * as SessionError from "./session-errors"
 
 const tryParseJson = (text: string) =>
@@ -59,6 +62,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const todoSvc = yield* Todo.Service
     const summary = yield* SessionSummary.Service
     const events = yield* EventV2Bridge.Service
+    const sideQuestionSvc = yield* SideQuestion.Service
     const scope = yield* Scope.Scope
 
     const list = Effect.fn("SessionHttpApi.list")(function* (ctx: { query: typeof ListQuery.Type }) {
@@ -328,6 +332,48 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       return HttpApiSchema.NoContent.make()
     })
 
+    const sideQuestion = Effect.fn("SessionHttpApi.sideQuestion")(function* (ctx: {
+      params: { sessionID: SessionID }
+      payload: typeof SideQuestionPayload.Type
+    }) {
+      const out = yield* sideQuestionSvc.ask({ ...ctx.payload, sessionID: ctx.params.sessionID }).pipe(
+        Effect.catch((error: unknown): Effect.Effect<never, ApiNotFoundError | HttpApiError.BadRequest> => {
+          if (SideQuestion.NotFound.isInstance(error)) {
+            return Effect.fail(notFound(`Session not found: ${error.sessionID}`))
+          }
+          if (SideQuestion.EmptyQuestion.isInstance(error)) return Effect.fail(new HttpApiError.BadRequest({}))
+          if (SideQuestion.UnsupportedModel.isInstance(error)) {
+            // BadRequest bodies carry no message; log the exclusion server-side:
+            // GitLab workflow language models are shared per providerID/modelID and
+            // mutated per stream call, so they are excluded from side questions.
+            return Effect.logWarning("side-question rejected: GitLab workflow language model excluded", {
+              providerID: error.providerID,
+              modelID: error.modelID,
+            }).pipe(Effect.andThen(Effect.fail(new HttpApiError.BadRequest({}))))
+          }
+          if (Provider.ModelNotFoundError.isInstance(error)) return Effect.fail(new HttpApiError.BadRequest({}))
+          // Tag-less provider/network failures are outside the wire contract;
+          // rethrow as defects and let the error middleware answer a sanitized 500.
+          return Effect.die(error)
+        }),
+      )
+      return {
+        answer: out.answer,
+        model: {
+          providerID: out.model.providerID,
+          modelID: out.model.id,
+          // Provider.Model does not carry the resolved variant; echo it only
+          // when the caller explicitly selected this exact model with a variant.
+          ...(ctx.payload.model?.variant !== undefined &&
+          ctx.payload.model.providerID === out.model.providerID &&
+          ctx.payload.model.modelID === out.model.id
+            ? { variant: ctx.payload.model.variant }
+            : {}),
+        },
+        createdMs: out.createdMs,
+      }
+    })
+
     const command = Effect.fn("SessionHttpApi.command")(function* (ctx: {
       params: { sessionID: SessionID }
       payload: typeof CommandPayload.Type
@@ -430,6 +476,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("summarize", summarize)
       .handle("prompt", prompt)
       .handle("promptAsync", promptAsync)
+      .handle("sideQuestion", sideQuestion)
       .handle("command", command)
       .handle("shell", shell)
       .handle("revert", revert)

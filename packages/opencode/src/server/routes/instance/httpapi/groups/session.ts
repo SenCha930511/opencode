@@ -67,6 +67,20 @@ export const SummarizePayload = Schema.Struct({
   modelID: ModelV2.ID,
   auto: Schema.optional(Schema.Boolean),
 })
+export const SideQuestionModel = Schema.Struct({
+  providerID: ProviderV2.ID,
+  modelID: ModelV2.ID,
+  variant: Schema.optional(Schema.String),
+})
+export const SideQuestionPayload = Schema.Struct({
+  question: Schema.NonEmptyString,
+  model: Schema.optional(SideQuestionModel),
+})
+export const SideQuestionResult = Schema.Struct({
+  answer: Schema.String,
+  model: SideQuestionModel,
+  createdMs: Schema.Number,
+})
 export const PromptPayload = Schema.Struct(Struct.omit(SessionPrompt.PromptInput.fields, ["sessionID"]))
 export const CommandPayload = Schema.Struct(Struct.omit(SessionPrompt.CommandInput.fields, ["sessionID"]))
 export const ShellPayload = Schema.Struct(Struct.omit(SessionPrompt.ShellInput.fields, ["sessionID"]))
@@ -94,6 +108,7 @@ export const SessionPaths = {
   summarize: `${root}/:sessionID/summarize`,
   prompt: `${root}/:sessionID/message`,
   promptAsync: `${root}/:sessionID/prompt_async`,
+  sideQuestion: `${root}/:sessionID/side-question`,
   command: `${root}/:sessionID/command`,
   shell: `${root}/:sessionID/shell`,
   revert: `${root}/:sessionID/revert`,
@@ -338,6 +353,20 @@ export const SessionApi = HttpApi.make("session")
             summary: "Send async message",
             description:
               "Create and send a new message to a session asynchronously, starting the session if needed and returning immediately.",
+          }),
+        ),
+        HttpApiEndpoint.post("sideQuestion", SessionPaths.sideQuestion, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          payload: SideQuestionPayload,
+          success: described(SideQuestionResult, "Side question answer"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.side_question",
+            summary: "Ask side question",
+            description:
+              "Ask a side question about the session's conversation without adding messages or affecting session state.",
           }),
         ),
         HttpApiEndpoint.post("command", SessionPaths.command, {
