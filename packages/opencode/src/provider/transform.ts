@@ -791,8 +791,9 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
         thinking: { chat_template_kwargs: { thinking_mode: "enabled" } },
       }
     }
-    // NCHC vLLM MiniMax-M3 always has thinking enabled with no true off switch;
-    // auto-generating none/thinking would be meaningless, so yield no variants.
+    // NCHC vLLM MiniMax-M3 does not accept reasoning_effort (400), so no
+    // auto variants; thinking toggles via chat_template_kwargs.thinking_mode
+    // (enabled/disabled) must come from config-defined variants instead.
     if (model.providerID === "nchc") return {}
     return {
       none: { thinking: { type: "disabled" } },
