@@ -2384,6 +2384,174 @@ noLLMServer.instance(
 // Agent / command resolution errors
 
 noLLMServer.instance(
+  "unknown variant throws typed error with available names",
+  () =>
+    Effect.gen(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({})
+
+      const exit = yield* prompt
+        .prompt({
+          sessionID: session.id,
+          agent: "build",
+          noReply: true,
+          variant: "nope",
+          parts: [{ type: "text", text: "hello" }],
+        })
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        const err = Cause.squash(exit.cause)
+        expect(err).not.toBeInstanceOf(TypeError)
+        expect(NamedError.Unknown.isInstance(err)).toBe(true)
+        if (NamedError.Unknown.isInstance(err)) {
+          expect(err.data.message).toContain('Variant not found: "nope"')
+          expect(err.data.message).toContain("xhigh")
+          expect(err.data.message).toContain("high")
+        }
+      }
+
+      yield* sessions.remove(session.id)
+    }),
+  {
+    config: {
+      ...cfg,
+      provider: {
+        ...cfg.provider,
+        test: {
+          ...cfg.provider.test,
+          models: {
+            "test-model": {
+              ...cfg.provider.test.models["test-model"],
+              variants: { xhigh: {}, high: {} },
+            },
+          },
+        },
+      },
+      agent: {
+        build: {
+          model: "test/test-model",
+        },
+      },
+    },
+  },
+  30_000,
+)
+
+noLLMServer.instance(
+  "unknown variant errors on models without any variants",
+  () =>
+    Effect.gen(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({})
+
+      const exit = yield* prompt
+        .prompt({
+          sessionID: session.id,
+          agent: "build",
+          noReply: true,
+          variant: "off",
+          parts: [{ type: "text", text: "hello" }],
+        })
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        const err = Cause.squash(exit.cause)
+        expect(NamedError.Unknown.isInstance(err)).toBe(true)
+        if (NamedError.Unknown.isInstance(err)) {
+          expect(err.data.message).toContain('Variant not found: "off"')
+        }
+      }
+
+      const valid = yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        variant: "default",
+        parts: [{ type: "text", text: "hello again" }],
+      })
+      expect(valid.info.role).toBe("user")
+
+      yield* sessions.remove(session.id)
+    }),
+  {
+    config: {
+      ...cfg,
+      provider: {
+        ...cfg.provider,
+        test: {
+          ...cfg.provider.test,
+          models: {
+            "test-model": {
+              ...cfg.provider.test.models["test-model"],
+              variants: {},
+            },
+          },
+        },
+      },
+      agent: {
+        build: {
+          model: "test/test-model",
+        },
+      },
+    },
+  },
+  30_000,
+)
+
+noLLMServer.instance(
+  "prototype-collision variant names are rejected",
+  () =>
+    Effect.gen(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({})
+
+      for (const name of ["constructor", "toString", "hasOwnProperty"]) {
+        const exit = yield* prompt
+          .prompt({
+            sessionID: session.id,
+            agent: "build",
+            noReply: true,
+            variant: name,
+            parts: [{ type: "text", text: "hello" }],
+          })
+          .pipe(Effect.exit)
+        expect(Exit.isFailure(exit)).toBe(true)
+      }
+
+      yield* sessions.remove(session.id)
+    }),
+  {
+    config: {
+      ...cfg,
+      provider: {
+        ...cfg.provider,
+        test: {
+          ...cfg.provider.test,
+          models: {
+            "test-model": {
+              ...cfg.provider.test.models["test-model"],
+              variants: { high: {} },
+            },
+          },
+        },
+      },
+      agent: {
+        build: {
+          model: "test/test-model",
+        },
+      },
+    },
+  },
+  30_000,
+)
+
+noLLMServer.instance(
   "unknown agent throws typed error",
   () =>
     Effect.gen(function* () {
