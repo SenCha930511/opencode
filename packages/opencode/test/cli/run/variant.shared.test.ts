@@ -11,6 +11,7 @@ import {
   formatModelLabel,
   pickVariant,
   resolveVariant,
+  unknownVariantError,
 } from "@/cli/cmd/run/variant.shared"
 import type { SessionMessages } from "@/cli/cmd/run/session.shared"
 import type { RunProvider } from "@/cli/cmd/run/types"
@@ -128,6 +129,16 @@ function remappedFs(root: string) {
 }
 
 describe("run variant shared", () => {
+  test("flags unknown cli variants", () => {
+    expect(unknownVariantError("nope", ["low", "high"])).toContain('variant "nope"')
+    expect(unknownVariantError("nope", ["low", "high"])).toContain("low, high")
+    expect(unknownVariantError("nope", [])).toContain("Model has no variants.")
+    expect(unknownVariantError("constructor", ["high"])).toContain('variant "constructor"')
+    expect(unknownVariantError("default", [])).toBeUndefined()
+    expect(unknownVariantError(undefined, [])).toBeUndefined()
+    expect(unknownVariantError("high", ["high"])).toBeUndefined()
+  })
+
   test("prefers cli then session then saved variants", () => {
     expect(resolveVariant("max", "high", "low", ["low", "high"])).toBe("max")
     expect(resolveVariant(undefined, "high", "low", ["low", "high"])).toBe("high")
