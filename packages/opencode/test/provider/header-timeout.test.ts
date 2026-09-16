@@ -305,3 +305,109 @@ function defaultAuthContent() {
     openai: { type: "oauth", refresh: "refresh", access: "access", expires: Date.now() + 60_000 },
   }
 }
+
+// --- stall retry ---
+
+it.live("stallRetry retries with stream:false when SSE ends without finish_reason", () =>
+  Effect.gen(function* () {
+    const server = yield* Effect.acquireRelease(
+      Effect.promise(() => stallRetryServer()),
+      (server) => Effect.sync(() => server.server.close()),
+    )
+
+    yield* provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const provider = yield* Provider.Service
+          const model = yield* provider.getModel(ProviderV2.ID.make("test"), ModelV2.ID.make("test-model"))
+          const result = streamText({
+            model: yield* provider.getLanguage(model),
+            onError() {},
+            messages: [{ role: "user", content: "hello" }],
+          })
+
+          expect(yield* Effect.promise(() => result.text)).toBe("recovered")
+        }),
+      { config: providerConfig(server.url, { stallRetry: true }) },
+    )
+  }),
+)
+
+it.live("stallRetry does not retry when SSE ends properly with finish_reason", () =>
+  Effect.gen(function* () {
+    const server = yield* Effect.acquireRelease(
+      Effect.promise(() => properStreamServer()),
+      (server) => Effect.sync(() => server.server.close()),
+    )
+
+    yield* provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const provider = yield* Provider.Service
+          const model = yield* provider.getModel(ProviderV2.ID.make("test"), ModelV2.ID.make("test-model"))
+          const result = streamText({
+            model: yield* provider.getLanguage(model),
+            messages: [{ role: "user", content: "hello" }],
+          })
+
+          expect(yield* Effect.promise(() => result.text)).toBe("ok")
+          expect(server.nonStreamHits).toBe(0)
+        }),
+      { config: providerConfig(server.url, { stallRetry: true }) },
+    )
+  }),
+)
+
+async function stallRetryServer(): Promise<{ server: Server; url: string; nonStreamHits: number }> {
+  let nonStreamHits = 0
+  const server = createServer((req, res) => {
+    let body = ""
+    req.on("data", (c) => (body += c))
+    req.on("end", () => {
+      let parsed: any = {}
+      try { parsed = JSON.parse(body) } catch {}
+      if (parsed.stream === false) {
+        nonStreamHits++
+        res.writeHead(200, { "content-type": "application/json" })
+        res.end(JSON.stringify({
+          id: "retry-1",
+          created: Math.floor(Date.now() / 1000),
+          model: "test-model",
+          object: "chat.completion",
+          choices: [{
+            index: 0,
+            message: { role: "assistant", content: "recovered" },
+            finish_reason: "stop",
+          }],
+          usage: { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 },
+        }))
+      } else {
+        res.writeHead(200, { "content-type": "text/event-stream" })
+        res.write('data: {"id":"stall-1","created":1,"model":"test-model","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"partial"}}]}\n\n')
+        res.end()
+      }
+    })
+  })
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  const address = server.address()
+  if (!address || typeof address === "string") throw new Error("server did not bind")
+  return { server, url: `http://127.0.0.1:${address.port}`, get nonStreamHits() { return nonStreamHits } }
+}
+
+async function properStreamServer(): Promise<{ server: Server; url: string; nonStreamHits: number }> {
+  let nonStreamHits = 0
+  const server = createServer((req, res) => {
+    let body = ""
+    req.on("data", (c) => (body += c))
+    req.on("end", () => {
+      res.writeHead(200, { "content-type": "text/event-stream" })
+      res.write('data: {"id":"ok-1","created":1,"model":"test-model","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"}}]}\n\n')
+      res.write('data: {"id":"ok-1","created":1,"model":"test-model","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n')
+      res.end('data: [DONE]\n\n')
+    })
+  })
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  const address = server.address()
+  if (!address || typeof address === "string") throw new Error("server did not bind")
+  return { server, url: `http://127.0.0.1:${address.port}`, get nonStreamHits() { return nonStreamHits } }
+}
