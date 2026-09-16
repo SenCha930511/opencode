@@ -4308,7 +4308,7 @@ describe("ProviderTransform.variants", () => {
     expect(result).toEqual({})
   })
 
-  test("glm-5.2 returns native effort variants for openai-compatible providers", () => {
+  test("glm-5.2 returns no auto variants for openai-compatible since vLLM rejects reasoning_effort", () => {
     const model = createMockModel({
       id: "zhipuai/glm-5.2",
       providerID: "zhipuai",
@@ -4318,13 +4318,10 @@ describe("ProviderTransform.variants", () => {
         npm: "@ai-sdk/openai-compatible",
       },
     })
-    expect(ProviderTransform.variants(model)).toEqual({
-      high: { reasoningEffort: "high" },
-      max: { reasoningEffort: "max" },
-    })
+    expect(ProviderTransform.variants(model)).toEqual({})
   })
 
-  test("recognizes GLM-5.2 provider model IDs", () => {
+  test("recognizes GLM-5.2 model IDs without auto variants", () => {
     for (const id of ["accounts/fireworks/models/glm-5p2", "zai-org-glm-5-2", "umans-glm-5.2"]) {
       const model = createMockModel({
         id: `test/${id}`,
@@ -4334,14 +4331,11 @@ describe("ProviderTransform.variants", () => {
           npm: "@ai-sdk/openai-compatible",
         },
       })
-      expect(ProviderTransform.variants(model)).toEqual({
-        high: { reasoningEffort: "high" },
-        max: { reasoningEffort: "max" },
-      })
+      expect(ProviderTransform.variants(model)).toEqual({})
     }
   })
 
-  test("recognizes GLM-5.2 from the API ID when the configured model ID is an alias", () => {
+  test("recognizes GLM-5.2 alias without auto variants", () => {
     const model = createMockModel({
       id: "custom/my-glm",
       api: {
@@ -4350,10 +4344,7 @@ describe("ProviderTransform.variants", () => {
         npm: "@ai-sdk/openai-compatible",
       },
     })
-    expect(ProviderTransform.variants(model)).toEqual({
-      high: { reasoningEffort: "high" },
-      max: { reasoningEffort: "max" },
-    })
+    expect(ProviderTransform.variants(model)).toEqual({})
   })
 
   test("glm-5.2 returns openrouter effort variants for openrouter", () => {

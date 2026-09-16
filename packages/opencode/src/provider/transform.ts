@@ -791,6 +791,9 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
         thinking: { chat_template_kwargs: { thinking_mode: "enabled" } },
       }
     }
+    // NCHC vLLM MiniMax-M3 always has thinking enabled with no true off switch;
+    // auto-generating none/thinking would be meaningless, so yield no variants.
+    if (model.providerID === "nchc") return {}
     return {
       none: { thinking: { type: "disabled" } },
       thinking: { thinking: { type: "adaptive" } },
@@ -805,12 +808,13 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
       xhigh: { reasoning: { effort: "xhigh" } },
     }
   }
-  if (glm52 && model.api.npm === "@ai-sdk/openai-compatible") {
-    return {
-      high: { reasoningEffort: "high" },
-      max: { reasoningEffort: "max" },
-    }
-  }
+  // GLM-5.2 on OpenAI-compatible providers cannot reliably use
+  // reasoning_effort for reasoning control. vLLM-based GLM deployments
+  // (e.g. NCHC RAP) reject it with 400; the correct toggle is typically
+  // chat_template_kwargs.enable_thinking which is provider-specific,
+  // so config-defined variants should be used instead of auto-generated ones.
+  if (glm52 && model.api.npm === "@ai-sdk/openai-compatible") return {}
+
   if (glm52 && model.api.npm === "@ai-sdk/anthropic") {
     return {
       high: { effort: "high" },
