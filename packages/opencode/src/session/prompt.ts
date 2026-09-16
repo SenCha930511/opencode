@@ -645,12 +645,21 @@ const layer = Layer.effect(
 
       const model = input.model ?? ag.model ?? (yield* currentModel(input.sessionID))
       const same = ag.model && model.providerID === ag.model.providerID && model.modelID === ag.model.modelID
-      const full =
-        !input.variant && ag.variant && same
-          ? yield* provider
-              .getModel(model.providerID, model.modelID)
-              .pipe(Effect.catchIf(Provider.ModelNotFoundError.isInstance, () => Effect.succeed(undefined)))
-          : undefined
+      const needsModel = (input.variant !== undefined && input.variant !== "default") || (ag.variant && same)
+      const full = needsModel
+        ? yield* provider
+            .getModel(model.providerID, model.modelID)
+            .pipe(Effect.catchIf(Provider.ModelNotFoundError.isInstance, () => Effect.succeed(undefined)))
+        : undefined
+      if (input.variant && input.variant !== "default" && full && !Object.hasOwn(full.variants ?? {}, input.variant)) {
+        const available = Object.keys(full.variants ?? {})
+        const hint = available.length ? ` Available variants: ${available.join(", ")}` : " Model has no variants."
+        const error = new NamedError.Unknown({
+          message: `Variant not found: "${input.variant}".${hint}`,
+        })
+        yield* events.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
+        throw error
+      }
       const variant = input.variant ?? (ag.variant && full?.variants?.[ag.variant] ? ag.variant : undefined)
 
       const info: SessionV1.User = {
