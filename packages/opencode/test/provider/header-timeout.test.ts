@@ -121,7 +121,7 @@ it.live("configured chunkTimeout raises a retryable response stream error when S
             SessionRetry.retryable(MessageV2.fromError(error, { providerID: model.providerID }), model.providerID),
           ).toEqual({ message: "SSE read timed out" })
         }),
-      { config: providerConfig(server.url, { chunkTimeout: 50 }) },
+      { config: providerConfig(server.url, { chunkTimeout: 50, stallRetry: false }) },
     )
   }),
 )
@@ -179,7 +179,7 @@ it.live("headerTimeout aborts when response headers do not arrive", () =>
           })
           expect(errors.join("\n")).toContain("response headers timed out")
         }),
-      { config: providerConfig(server.url, { headerTimeout: 50 }) },
+      { config: providerConfig(server.url, { headerTimeout: 50, stallRetry: false }) },
     )
   }),
 )
@@ -326,7 +326,8 @@ it.live("stallRetry retries with stream:false when SSE ends without finish_reaso
             messages: [{ role: "user", content: "hello" }],
           })
 
-          expect(yield* Effect.promise(() => result.text)).toBe("recovered")
+          expect(yield* Effect.promise(() => result.text)).toBe("partial\nrecovered")
+          expect(server.nonStreamHits).toBe(1)
         }),
       { config: providerConfig(server.url, { stallRetry: true }) },
     )
@@ -404,6 +405,130 @@ async function properStreamServer(): Promise<{ server: Server; url: string; nonS
       res.write('data: {"id":"ok-1","created":1,"model":"test-model","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"}}]}\n\n')
       res.write('data: {"id":"ok-1","created":1,"model":"test-model","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n')
       res.end('data: [DONE]\n\n')
+    })
+  })
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  const address = server.address()
+  if (!address || typeof address === "string") throw new Error("server did not bind")
+  return { server, url: `http://127.0.0.1:${address.port}`, get nonStreamHits() { return nonStreamHits } }
+}
+
+it.live("stallRetry recovers when response headers time out", () =>
+  Effect.gen(function* () {
+    const server = yield* Effect.acquireRelease(
+      Effect.promise(() => headerHangServer()),
+      (server) => Effect.sync(() => server.server.close()),
+    )
+
+    yield* provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const provider = yield* Provider.Service
+          const model = yield* provider.getModel(ProviderV2.ID.make("test"), ModelV2.ID.make("test-model"))
+          const result = streamText({
+            model: yield* provider.getLanguage(model),
+            onError() {},
+            messages: [{ role: "user", content: "hello" }],
+          })
+
+          expect(yield* Effect.promise(() => result.text)).toBe("recovered")
+          expect(server.nonStreamHits).toBe(1)
+        }),
+      { config: providerConfig(server.url, { headerTimeout: 50, stallRetry: true }) },
+    )
+  }),
+)
+
+it.live("stallRetry recovers when SSE body stalls mid-stream with open connection", () =>
+  Effect.gen(function* () {
+    const server = yield* Effect.acquireRelease(
+      Effect.promise(() => midStreamHangServer()),
+      (server) => Effect.sync(() => server.server.close()),
+    )
+
+    yield* provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const provider = yield* Provider.Service
+          const model = yield* provider.getModel(ProviderV2.ID.make("test"), ModelV2.ID.make("test-model"))
+          const result = streamText({
+            model: yield* provider.getLanguage(model),
+            onError() {},
+            messages: [{ role: "user", content: "hello" }],
+          })
+
+          expect(yield* Effect.promise(() => result.text)).toBe("partial continued")
+          expect(server.nonStreamHits).toBe(1)
+        }),
+      { config: providerConfig(server.url, { chunkTimeout: 50, stallRetry: true }) },
+    )
+  }),
+)
+
+async function headerHangServer(): Promise<{ server: Server; url: string; nonStreamHits: number }> {
+  let nonStreamHits = 0
+  const server = createServer((req, res) => {
+    let body = ""
+    req.on("data", (c) => (body += c))
+    req.on("end", () => {
+      let parsed: any = {}
+      try { parsed = JSON.parse(body) } catch {}
+      if (parsed.stream === false) {
+        nonStreamHits++
+        res.writeHead(200, { "content-type": "application/json" })
+        res.end(JSON.stringify({
+          id: "retry-1",
+          created: Math.floor(Date.now() / 1000),
+          model: "test-model",
+          object: "chat.completion",
+          choices: [{
+            index: 0,
+            message: { role: "assistant", content: "recovered" },
+            finish_reason: "stop",
+          }],
+          usage: { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 },
+        }))
+      } else {
+        // Never write headers — simulates server hang before first byte.
+        // Connection sits idle until headerTimeout aborts the fetch.
+      }
+    })
+  })
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  const address = server.address()
+  if (!address || typeof address === "string") throw new Error("server did not bind")
+  return { server, url: `http://127.0.0.1:${address.port}`, get nonStreamHits() { return nonStreamHits } }
+}
+
+async function midStreamHangServer(): Promise<{ server: Server; url: string; nonStreamHits: number }> {
+  let nonStreamHits = 0
+  const server = createServer((req, res) => {
+    let body = ""
+    req.on("data", (c) => (body += c))
+    req.on("end", () => {
+      let parsed: any = {}
+      try { parsed = JSON.parse(body) } catch {}
+      if (parsed.stream === false) {
+        nonStreamHits++
+        res.writeHead(200, { "content-type": "application/json" })
+        res.end(JSON.stringify({
+          id: "retry-1",
+          created: Math.floor(Date.now() / 1000),
+          model: "test-model",
+          object: "chat.completion",
+          choices: [{
+            index: 0,
+            message: { role: "assistant", content: "partial continued" },
+            finish_reason: "stop",
+          }],
+          usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 },
+        }))
+      } else {
+        // Send partial content then hold the connection open forever —
+        // simulates vLLM streaming parser stall mid-stream.
+        res.writeHead(200, { "content-type": "text/event-stream" })
+        res.write('data: {"id":"hang-1","created":1,"model":"test-model","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"partial"}}]}\n\n')
+      }
     })
   })
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))

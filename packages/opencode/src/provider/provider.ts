@@ -1,4 +1,5 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { appendFileSync } from "node:fs"
 import os from "os"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import fuzzysort from "fuzzysort"
@@ -67,6 +68,207 @@ function wrapSSE(res: Response, ms: number, ctl: AbortController) {
         return
       }
 
+      ctrl.enqueue(part.value)
+    },
+    async cancel(reason) {
+      ctl.abort(reason)
+      await reader.cancel(reason)
+    },
+  })
+
+  return new Response(body, {
+    headers: new Headers(res.headers),
+    status: res.status,
+    statusText: res.statusText,
+  })
+}
+
+const encoder = new TextEncoder()
+
+function sseChunk(obj: Record<string, unknown>): Uint8Array {
+  return encoder.encode(`data: ${JSON.stringify(obj)}\n\n`)
+}
+
+function nonStreamToSSE(
+  json: any,
+  prior: { reasoning?: string; content?: string; toolCalls?: boolean } = {},
+): Uint8Array[] {
+  const id = json.id ?? "retry"
+  const created = json.created ?? Math.floor(Date.now() / 1000)
+  const model = json.model ?? "unknown"
+  const choice = json.choices?.[0]
+  if (!choice) return [encoder.encode("data: [DONE]\n\n")]
+  const msg = choice.message ?? {}
+  const chunks: Uint8Array[] = []
+  const finish = choice.finish_reason ?? "stop"
+
+  // Prefix-diff: emit only the suffix not already streamed. On mismatch
+  // (retry produced different text than the truncated stream), emit a
+  // newline separator + the full retry text rather than dropping it.
+  const suffixOf = (full: string, prev?: string): string | null => {
+    if (!full) return null
+    if (!prev) return full
+    if (full.startsWith(prev)) {
+      const s = full.slice(prev.length)
+      return s.length ? s : null
+    }
+    return "\n" + full
+  }
+
+  const reasoningSuffix = suffixOf(msg.reasoning_content, prior.reasoning)
+  if (reasoningSuffix) {
+    chunks.push(sseChunk({ id, created, model, object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", reasoning_content: reasoningSuffix } }] }))
+  }
+  const contentSuffix = suffixOf(msg.content, prior.content)
+  if (contentSuffix) {
+    chunks.push(sseChunk({ id, created, model, object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: contentSuffix } }] }))
+  }
+  // Only emit tool_calls if none were partially streamed — argument
+  // fragments cannot be safely merged across two independent generations.
+  if (msg.tool_calls && !prior.toolCalls) {
+    for (const tc of msg.tool_calls) {
+      chunks.push(sseChunk({ id, created, model, object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", tool_calls: [tc] } }] }))
+    }
+  }
+  chunks.push(sseChunk({ id, created, model, object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: finish }] }))
+  if (json.usage) {
+    chunks.push(sseChunk({ id, created, model, object: "chat.completion.chunk", choices: [{ index: 0, delta: {} }], usage: json.usage }))
+  }
+  chunks.push(encoder.encode("data: [DONE]\n\n"))
+  return chunks
+}
+
+function logStallRetry(reason: string, providerID: string, modelID: string) {
+  try {
+    appendFileSync(
+      path.join(Global.Path.log, "opencode.log"),
+      `timestamp=${new Date().toISOString()} level=INFO run=- message="stall retry" reason=${JSON.stringify(reason)} providerID=${providerID} modelID=${modelID}\n`,
+    )
+  } catch {
+  }
+}
+
+function isStreamBody(body: unknown): boolean {
+  if (typeof body !== "string") return false
+  try {
+    const parsed = JSON.parse(body)
+    return parsed && parsed.stream === true
+  } catch {
+    return false
+  }
+}
+
+async function fetchNonStreamRecovery(fetchFn: typeof fetch, input: any, init: any, ms: number): Promise<any> {
+  const parsed = typeof init?.body === "string" ? JSON.parse(init.body) : {}
+  const res = await fetchFn(input, {
+    ...init,
+    signal: AbortSignal.timeout(ms),
+    body: JSON.stringify({ ...parsed, stream: false }),
+  })
+  if (!res.ok) throw new ProviderError.ResponseStreamError(`stall retry failed: ${res.status}`)
+  return await res.json()
+}
+
+function wrapSSEWithStallRetry(
+  res: Response,
+  ms: number,
+  ctl: AbortController,
+  input: any,
+  init: any,
+  fetchFn: typeof fetch,
+  info: { providerID: string; modelID: string },
+): Response {
+  if (!res.body) return res
+  if (!res.headers.get("content-type")?.includes("text/event-stream")) return res
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let sawFinish = false
+  let sawDone = false
+  let reasoning = ""
+  let content = ""
+  let sawToolCalls = false
+  let retried = false
+  let lineBuf = ""
+
+  // Parse complete SSE data lines so we can diff against the retry.
+  // Substring heuristics split across chunk boundaries; exact JSON per line
+  // is the only correct way to know what was already delivered.
+  const feed = (text: string) => {
+    lineBuf += text
+    let nl = lineBuf.indexOf("\n")
+    while (nl !== -1) {
+      const line = lineBuf.slice(0, nl).replace(/\r$/, "")
+      lineBuf = lineBuf.slice(nl + 1)
+      if (line.startsWith("data:")) {
+        const payload = line.slice(5).trimStart()
+        if (payload === "[DONE]") {
+          sawDone = true
+        } else if (payload) {
+          try {
+            const o = JSON.parse(payload)
+            const d = o?.choices?.[0]?.delta
+            if (d) {
+              if (typeof d.reasoning_content === "string") reasoning += d.reasoning_content
+              if (typeof d.content === "string") content += d.content
+              if (Array.isArray(d.tool_calls) && d.tool_calls.length > 0) sawToolCalls = true
+            }
+            const fr = o?.choices?.[0]?.finish_reason
+            if (fr) sawFinish = true
+          } catch {
+            // ignore non-JSON data lines (comments, heartbeats)
+          }
+        }
+      }
+      nl = lineBuf.indexOf("\n")
+    }
+  }
+
+  const recover = async (ctrl: ReadableStreamDefaultController<Uint8Array>, reason: string) => {
+    if (retried) return
+    retried = true
+    logStallRetry(reason, info.providerID, info.modelID)
+    try {
+      const json = await fetchNonStreamRecovery(fetchFn, input, init, ms)
+      for (const chunk of nonStreamToSSE(json, { reasoning, content, toolCalls: sawToolCalls })) ctrl.enqueue(chunk)
+    } catch {
+      ctrl.enqueue(sseChunk({ error: { message: "stall retry failed" } }))
+      ctrl.enqueue(encoder.encode("data: [DONE]\n\n"))
+    }
+  }
+
+  const body = new ReadableStream<Uint8Array>({
+    async pull(ctrl) {
+      // On read timeout, cancel the dead reader and resolve as done so the
+      // unified recovery path below fires — identical to a clean truncation.
+      const part = await new Promise<{ done: boolean; value?: Uint8Array }>((resolve, reject) => {
+        const id = setTimeout(() => {
+          reader.cancel(new ProviderError.ResponseStreamError("SSE read timed out")).catch(() => {})
+          resolve({ done: true })
+        }, ms)
+
+        reader.read().then(
+          (part) => {
+            clearTimeout(id)
+            resolve(part)
+          },
+          (err) => {
+            clearTimeout(id)
+            reject(err)
+          },
+        )
+      })
+
+      if (part.done) {
+        if (!sawFinish && !sawDone) {
+          await recover(ctrl, sawFinish ? "stream ended" : "SSE read timed out")
+        }
+        ctrl.close()
+        return
+      }
+
+      const text = decoder.decode(part.value as ArrayBufferView, { stream: true })
+      feed(text)
       ctrl.enqueue(part.value)
     },
     async cancel(reason) {
@@ -1798,8 +2000,10 @@ const layer = Layer.effect(
         const customFetch = options["fetch"]
         const chunkTimeout = options["chunkTimeout"] ?? 300_000
         const headerTimeout = options["headerTimeout"] ?? 300_000
+        const stallRetry = options["stallRetry"] ?? model.api.npm === "@ai-sdk/openai-compatible"
         delete options["chunkTimeout"]
         delete options["headerTimeout"]
+        delete options["stallRetry"]
 
         options["fetch"] = async (input: any, init?: BunFetchRequestInit) => {
           const fetchFn = customFetch ?? fetch
@@ -1818,13 +2022,48 @@ const layer = Layer.effect(
           const combined = signals.length === 0 ? null : signals.length === 1 ? signals[0] : AbortSignal.any(signals)
           if (combined) opts.signal = combined
 
-          const res = await fetchFn(input, {
-            ...opts,
-            // @ts-ignore see here: https://github.com/oven-sh/bun/issues/16682
-            timeout: false,
-          }).finally(() => headerTimeoutCtl?.clear())
+          const info = { providerID: String(model.providerID), modelID: String(model.api.id) }
+          const retryMs = typeof chunkTimeout === "number" && chunkTimeout > 0 ? chunkTimeout : 300_000
+
+          let res: Response
+          try {
+            res = await fetchFn(input, {
+              ...opts,
+              // @ts-ignore see here: https://github.com/oven-sh/bun/issues/16682
+              timeout: false,
+            })
+          } catch (err) {
+            headerTimeoutCtl?.clear()
+            // Header hang: server accepted the connection but never sent
+            // response headers within headerTimeout. Re-issue the request
+            // as non-stream and synthesize an SSE response from the JSON.
+            if (stallRetry && headerTimeoutCtl?.signal.aborted && isStreamBody(opts.body)) {
+              logStallRetry("response headers timed out", info.providerID, info.modelID)
+              try {
+                const json = await fetchNonStreamRecovery(fetchFn, input, opts, retryMs)
+                const chunks = nonStreamToSSE(json)
+                const body = new ReadableStream<Uint8Array>({
+                  start(ctrl) {
+                    for (const chunk of chunks) ctrl.enqueue(chunk)
+                    ctrl.close()
+                  },
+                })
+                return new Response(body, {
+                  headers: new Headers({ "content-type": "text/event-stream" }),
+                  status: 200,
+                  statusText: "OK",
+                })
+              } catch {
+                throw err
+              }
+            }
+            throw err
+          } finally {
+            headerTimeoutCtl?.clear()
+          }
 
           if (!chunkAbortCtl) return res
+          if (stallRetry) return wrapSSEWithStallRetry(res, chunkTimeout, chunkAbortCtl, input, opts, fetchFn, info)
           return wrapSSE(res, chunkTimeout, chunkAbortCtl)
         }
 
