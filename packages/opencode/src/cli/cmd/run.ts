@@ -25,6 +25,7 @@ import { Filesystem } from "@/util/filesystem"
 import { createOpencodeClient, type OpencodeClient, type ToolPart } from "@opencode-ai/sdk/v2"
 import { FormatError, FormatUnknownError } from "../error"
 import { INTERACTIVE_INPUT_ERROR, resolveInteractiveStdin } from "./run/runtime.stdin"
+import { unknownVariantError, listModelVariants } from "./run/variant.shared"
 
 type ModelInput = Parameters<OpencodeClient["session"]["prompt"]>[0]["model"]
 
@@ -825,8 +826,21 @@ export const RunCommand = effectCmd({
         const cwd = args.attach ? (directory ?? sess.directory ?? (await current(sdk))) : (directory ?? root)
         const client = args.attach ? attachSDK(cwd) : sdk
 
+        const flagVariantIssue = async () => {
+          if (!args.variant || !args.model) return undefined
+          const variants = await listModelVariants(client, cwd, args.model)
+          return unknownVariantError(args.variant, variants)
+        }
+
         // Validate agent if specified
         const agent = await pickAgent(client)
+
+        const variantIssue = await flagVariantIssue()
+        if (variantIssue) {
+          UI.error(variantIssue)
+          process.exitCode = 1
+          return
+        }
 
         await share(client, sessionID)
 

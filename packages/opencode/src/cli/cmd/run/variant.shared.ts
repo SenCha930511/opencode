@@ -79,6 +79,38 @@ export function pickVariant(model: RunInput["model"], input: RunSession | Sessio
   return sessionVariant(Array.isArray(input) ? createSession(input) : input, model)
 }
 
+export function unknownVariantError(variant: string | undefined, variants: string[]): string | undefined {
+  if (!variant || variant === "default") {
+    return undefined
+  }
+
+  if (variants.includes(variant)) {
+    return undefined
+  }
+
+  const suffix = variants.length ? `Available variants: ${variants.join(", ")}` : "Model has no variants."
+  return `variant "${variant}" not found for this model. ${suffix}`
+}
+
+export async function listModelVariants(
+  sdk: {
+    config: { providers: (args: { directory: string }) => Promise<{ data?: { providers?: any[] } }> }
+    provider: { list: () => Promise<{ data?: { all?: any[] } }> }
+  },
+  directory: string,
+  model: string,
+): Promise<string[]> {
+  const [providerID, ...rest] = model.split("/")
+  const modelID = rest.join("/")
+  const connected = await sdk.config
+    .providers({ directory })
+    .then((item) => item.data?.providers)
+    .catch(() => undefined)
+  const providers = connected ?? (await sdk.provider.list().then((item) => item.data?.all ?? []).catch(() => []))
+  const info = providers.find((item) => item?.id === providerID)?.models?.[modelID]
+  return Object.keys(info?.variants ?? {})
+}
+
 function fitVariant(value: string | undefined, variants: string[]): string | undefined {
   if (!value) {
     return undefined
