@@ -259,6 +259,31 @@ test("loading then answer render in the docked panel, never in the dialog stack"
   }
 })
 
+test("long answers stay in a compact dock while the transcript remains visible", async () => {
+  await using tmp = await tmpdir()
+  const tui = await mount({ root: tmp.path })
+  try {
+    tui.ask("long answer")
+    await wait(() => tui.calls.length === 1)
+    tui.calls[0].resolve(
+      json({
+        answer: Array.from({ length: 40 }, (_, index) => `answer-row-${index}`).join("\n\n"),
+        model: { providerID: "p1", modelID: "m1" },
+      }),
+    )
+    await wait(() => tui.frame().includes("answer-row-0"))
+    await Bun.sleep(30)
+    const frame = tui.frame()
+    expect(frame).toContain(TRANSCRIPT)
+    expect(frame).toContain("/btw")
+    expect(frame).not.toContain("answer-row-39")
+    expect(frame.split("\n").filter((line) => line.includes("answer-row-")).length).toBeLessThanOrEqual(6)
+    expect(tui.ctx.dialog.stack).toHaveLength(0)
+  } finally {
+    await tui.cleanup()
+  }
+})
+
 test("shows error message in the panel when the request rejects", async () => {
   await using tmp = await tmpdir()
   const tui = await mount({ root: tmp.path })

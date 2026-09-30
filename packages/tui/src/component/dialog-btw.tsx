@@ -183,12 +183,12 @@ export function DialogBtw() {
     ],
   }))
 
-  const bodyHeight = createMemo(() => Math.max(4, Math.min(14, dimensions().height - 12)))
+  const bodyHeight = createMemo(() => Math.max(1, Math.min(6, Math.floor(dimensions().height / 4))))
   const listHeight = createMemo(() => Math.min(bodyHeight(), state.entries.length * 2))
 
   // A scrollbox is flexGrow-shaped and would reserve its full max height even for
   // a one-line answer, so short bodies render in a plain clamped box and only a
-  // measured-tall body swaps to the scrollbox (which keeps the ~14-row cap).
+  // measured-tall body swaps to the scrollbox, capped at a quarter of the terminal.
   const [tall, setTall] = createSignal(false)
   const body = createMemo(() => (state.status === "entry" ? state.entries[state.selected]?.a : state.answer) ?? "")
 
@@ -231,7 +231,7 @@ export function DialogBtw() {
         customBorderChars={SplitBorder.customBorderChars}
         flexShrink={0}
       >
-        <box flexDirection="column" gap={1} paddingLeft={1} paddingRight={2} paddingTop={1} paddingBottom={1}>
+        <box flexDirection="column" gap={1} paddingLeft={1} paddingRight={2} paddingTop={1}>
           <box flexDirection="row" gap={1}>
             <text attributes={TextAttributes.BOLD} fg={theme.text}>
               /btw

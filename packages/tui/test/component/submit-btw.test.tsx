@@ -57,7 +57,7 @@ type Probed = {
   local: ReturnType<typeof useLocal>
 }
 
-async function mount(input: { root: string; sessionID?: string }) {
+async function mount(input: { root: string; sessionID?: string; sideConversation?: () => void }) {
   const state = path.join(input.root, "state")
   await mkdir(state, { recursive: true })
   await Bun.write(path.join(state, "kv.json"), "{}")
@@ -188,6 +188,15 @@ async function mount(input: { root: string; sessionID?: string }) {
     const resolvedConfig = createTuiResolvedConfig({ keybinds: {}, leader_timeout: 1000 })
     const off = registerOpencodeKeymap(keymap, renderer, resolvedConfig)
     onCleanup(off)
+    if (input.sideConversation) {
+      onCleanup(
+        keymap.registerLayer({
+          priority: 10000,
+          enabled: () => /^\/btw(?:\s|$)/.test(promptRef?.current.input ?? ""),
+          bindings: [{ key: "enter,return", cmd: input.sideConversation }],
+        }),
+      )
+    }
 
     return (
       <TestTuiContexts
@@ -277,6 +286,13 @@ async function mount(input: { root: string; sessionID?: string }) {
       if (ref.current.input !== value) ref.set({ input: value, parts: [] })
       ref.submit()
     },
+    async typeAndEnter(value: string) {
+      const ref = await prompt()
+      ref.focus()
+      for (const key of value) app.mockInput.pressKey(key)
+      await Bun.sleep(20)
+      app.mockInput.pressEnter()
+    },
     composerText() {
       // promptRef is guaranteed to exist after typeAndSubmit awaited prompt()
       return promptRef?.current.input
@@ -295,6 +311,37 @@ async function mount(input: { root: string; sessionID?: string }) {
     },
   }
 }
+
+test("/btw Enter uses the docked panel before a plugin side-conversation binding", async () => {
+  await using tmp = await tmpdir()
+  const sideConversation = mock(() => {})
+  const tui = await mount({ root: tmp.path, sessionID: "ses_test", sideConversation })
+  try {
+    await tui.typeAndEnter("/btw hello")
+    await wait(() => ask.mock.calls.length === 1)
+    expect(tui.asked(0)).toEqual({ sessionID: "ses_test", question: "hello" })
+    expect(sideConversation).not.toHaveBeenCalled()
+    expect(tui.posted).toHaveLength(0)
+  } finally {
+    await tui.cleanup()
+  }
+})
+
+test("bare /btw Enter keeps the native history flow while autocomplete is open", async () => {
+  await using tmp = await tmpdir()
+  read.mockImplementation(() => Promise.resolve([{ ts: 1, sessionID: "ses_test", q: "q", a: "a", model: "p1/m1" }]))
+  const sideConversation = mock(() => {})
+  const tui = await mount({ root: tmp.path, sessionID: "ses_test", sideConversation })
+  try {
+    await tui.typeAndEnter("/btw")
+    await wait(() => openBtwHistory.mock.calls.length === 1)
+    expect(sideConversation).not.toHaveBeenCalled()
+    expect(tui.posted).toHaveLength(0)
+    expect(tui.composerText()).toBe("")
+  } finally {
+    await tui.cleanup()
+  }
+})
 
 test("/btw hello in a session asks the side question and clears the composer", async () => {
   await using tmp = await tmpdir()
@@ -327,7 +374,7 @@ test("bare /btw with history entries opens the inline history browser", async ()
     expect(read.mock.calls[0]?.[0]).toBe("ses_test")
     expect(ask.mock.calls).toHaveLength(0)
     expect(tui.usageToastShown()).toBe(false)
-    expect(tui.composerText()).toBe("/btw")
+    expect(tui.composerText()).toBe("")
     expect(tui.posted).toHaveLength(0)
   } finally {
     await tui.cleanup()

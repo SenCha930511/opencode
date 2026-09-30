@@ -582,6 +582,13 @@ export function Prompt(props: PromptProps) {
     ]),
   }))
 
+  // Keep the docked /btw flow ahead of plugins that open a side session on Enter.
+  useBindings(() => ({
+    priority: 20001,
+    enabled: () => input?.focused && store.mode !== "shell" && /^\/btw(?:\s|$)/i.test(input.plainText),
+    bindings: [{ key: "enter,return", cmd: "prompt.submit" }],
+  }))
+
   const ref: PromptRef = {
     get focused() {
       return input.focused
@@ -998,6 +1005,8 @@ export function Prompt(props: PromptProps) {
         const history: BtwHistory | undefined = await import("../../prompt/" + "btw-history").catch(() => undefined)
         const entries = history ? await history.read(sessionID) : []
         if (entries.length > 0) {
+          clearPrompt()
+          auto()?.onInput("")
           openBtwHistory({ dialog, sessionID })
           return true
         }

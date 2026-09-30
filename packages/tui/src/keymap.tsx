@@ -271,6 +271,8 @@ export function useCommandSlashes(): Accessor<readonly CommandSlashEntry[]> {
     entries().flatMap((entry) => {
       const slashName = entry.command.slashName
       if (typeof slashName !== "string" || !slashName) return []
+      // /btw belongs to the built-in docked panel, even when a plugin registers it too.
+      if (slashName === "btw" && entry.command.name !== "session.btw") return []
       const slashAliases = entry.command.slashAliases
       return {
         display: `/${slashName}`,
