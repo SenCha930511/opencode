@@ -18,6 +18,7 @@ import { useTheme, selectedForeground } from "../../context/theme"
 import { SplitBorder } from "../../ui/border"
 import { useTerminalDimensions } from "@opentui/solid"
 import { Locale } from "../../util/locale"
+import { agentDisplayName } from "../../util/display-name"
 import type { PromptInfo } from "../../prompt/history"
 import { useFrecency } from "../../prompt/frecency"
 import { useBindings, useCommandSlashes, useOpencodeModeStack } from "../../keymap"
@@ -404,9 +405,9 @@ export function Autocomplete(props: {
       .filter((agent) => !agent.hidden && agent.mode !== "primary")
       .map(
         (agent): AutocompleteOption => ({
-          display: "@" + agent.name,
+          display: "@" + agentDisplayName(agent.name),
           onSelect: () => {
-            insertPart(agent.name, {
+            insertPart(agentDisplayName(agent.name), {
               type: "agent",
               name: agent.name,
               source: {

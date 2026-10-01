@@ -16,6 +16,7 @@ import * as fuzzysort from "fuzzysort"
 import { isDeepEqual } from "remeda"
 import { useDialog, type DialogContext } from "./dialog"
 import { Locale } from "../util/locale"
+import { displayName } from "../util/display-name"
 import { getScrollAcceleration } from "../util/scroll"
 import { useTuiConfig } from "../config"
 import { formatKeyBindings, useBindings, useKeymapSelector } from "../keymap"
@@ -152,10 +153,16 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
   })
 
   const filtered = createMemo(() => {
-    if (props.skipFilter || props.renderFilter === false) return props.options.filter((x) => x.disabled !== true)
+    const visible = props.options.map((option) => ({
+      ...option,
+      title: displayName(option.title),
+      description: option.description ? displayName(option.description) : undefined,
+      category: option.category ? displayName(option.category) : undefined,
+    }))
+    if (props.skipFilter || props.renderFilter === false) return visible.filter((x) => x.disabled !== true)
     const needle = store.filter.toLowerCase()
     const options = pipe(
-      props.options,
+      visible,
       filter((x) => x.disabled !== true),
     )
     if (!needle) return options
@@ -528,7 +535,7 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
       return (
         <text>
           <span style={{ fg: theme.text }}>
-            <b>{action.item.title}</b>{" "}
+            <b>{displayName(action.item.title)}</b>{" "}
           </span>
           <span style={{ fg: theme.textMuted }}>{action.item.label}</span>
         </text>
@@ -547,7 +554,7 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
           fg={disabled() ? theme.textMuted : active() ? fg : theme.text}
           attributes={active() ? TextAttributes.BOLD : undefined}
         >
-          {item.title}
+          {displayName(item.title)}
         </text>
         <text fg={disabled() ? theme.textMuted : active() ? fg : theme.textMuted}> {item.label}</text>
       </box>
@@ -560,7 +567,7 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
         <box flexDirection="row" justifyContent="space-between">
           {props.titleView ?? (
             <text fg={theme.text} attributes={TextAttributes.BOLD}>
-              {props.title}
+              {displayName(props.title)}
             </text>
           )}
           <text fg={theme.textMuted} onMouseUp={() => dialog.clear()}>

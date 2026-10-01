@@ -3,6 +3,7 @@ import { fileURLToPath } from "bun"
 import { useTheme } from "../context/theme"
 import { useDialog } from "../ui/dialog"
 import { useSync } from "../context/sync"
+import { displayName } from "../util/display-name"
 import { For, Match, Switch, Show, createMemo } from "solid-js"
 
 export type DialogStatusProps = {}
@@ -37,7 +38,9 @@ export function DialogStatus() {
       const version = value.substring(index + 1)
       return { name, version }
     })
-    return result.toSorted((a, b) => a.name.localeCompare(b.name))
+    return result
+      .map((item) => ({ ...item, name: displayName(item.name) }))
+      .toSorted((a, b) => a.name.localeCompare(b.name))
   })
 
   return (

@@ -106,6 +106,8 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
     const config = useTuiConfig()
     const kv = useKV()
     const themes = props.source ?? themeSource
+    // Migrate the removed experimental layout back to the original theme.
+    if (!config.theme && kv.get("theme") === "cli") kv.set("theme", "opencode")
     const pick = (value: unknown) => {
       if (value === "dark" || value === "light") return value
       return

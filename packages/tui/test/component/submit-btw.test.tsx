@@ -57,7 +57,7 @@ type Probed = {
   local: ReturnType<typeof useLocal>
 }
 
-async function mount(input: { root: string; sessionID?: string; sideConversation?: () => void }) {
+async function mount(input: { root: string; sessionID?: string; sideConversation?: () => void; agent?: string }) {
   const state = path.join(input.root, "state")
   await mkdir(state, { recursive: true })
   await Bun.write(path.join(state, "kv.json"), "{}")
@@ -132,7 +132,8 @@ async function mount(input: { root: string; sessionID?: string; sideConversation
       // session.prompt posts to /session/:id/message in this sdk generation
       if (/^\/session\/[^/]+\/(message|command|shell)$/.test(url.pathname)) return json({})
     }
-    if (url.pathname === "/agent") return json([{ name: "build", mode: "primary", permission: [], options: {} }])
+    if (url.pathname === "/agent")
+      return json([{ name: input.agent ?? "build", mode: "primary", permission: [], options: {} }])
     if (url.pathname === "/config/providers")
       return json({
         providers: [
@@ -270,6 +271,7 @@ async function mount(input: { root: string; sessionID?: string; sideConversation
     app,
     ctx,
     posted,
+    prompt,
     frame() {
       return app.captureCharFrame()
     },
@@ -409,6 +411,29 @@ test("/btw hello on home shows usage and never creates a session", async () => {
     await Bun.sleep(100)
     expect(tui.posted.filter((call) => call.pathname === "/session")).toHaveLength(0)
     expect(tui.composerText()).toBe("/btw hi")
+  } finally {
+    await tui.cleanup()
+  }
+})
+
+test.each([
+  ["Sisyphus - ultraworker", "Code"],
+  ["artistry", "Artistry"],
+])("agent %s displays as %s without changing plugin dispatch", async (agent, label) => {
+  await using tmp = await tmpdir()
+  const tui = await mount({ root: tmp.path, sessionID: "ses_test", agent })
+  try {
+    await tui.modelReady()
+    const ref = await tui.prompt()
+    ref.set({ input: "", parts: [] })
+    await Bun.sleep(20)
+    await tui.app.renderOnce()
+    expect(tui.frame()).toContain(label)
+    expect(tui.frame()).not.toContain("Sisyphus")
+    expect(tui.frame()).not.toContain("Ask OpenCode to do anything")
+    await tui.typeAndSubmit("hello")
+    await wait(() => tui.posts("message").length === 1)
+    expect(tui.posts("message")[0]?.body.agent).toBe(agent)
   } finally {
     await tui.cleanup()
   }
